@@ -7,6 +7,7 @@
 #include <QMediaDevices>
 #include <QPixmap>
 #include <QPainter>
+#include <QThread>
 
 extern double rec_arr[];
 extern int rec_arr_cnt;
@@ -38,7 +39,7 @@ public:
 
 signals:
     void levelChanged(qreal level);
-    void on_stopMic();
+    void on_TimeOut() const;
 
 private:
     const QAudioFormat m_format;
@@ -52,19 +53,18 @@ class Widget : public QWidget
 public:
     Widget(QWidget *parent = nullptr);
     ~Widget();
+    QThread MicThread;
 
 protected:
     void paintEvent(QPaintEvent *event);
 
-signals:
-    void on_click_stopMic();
-
-public slots:
-    void on_btnStart_clicked();
+public slots:    
     void updateKBnote(int kbValue, float acc);
     void stop_mic();
+    void TimeOut();
 
 private slots:
+    void on_btnStart_clicked();
     void on_btnStop_clicked();
 
 private:
@@ -75,8 +75,8 @@ private:
 private:
     // Owned by layout
     QMediaDevices *m_devices = nullptr;
-    std::unique_ptr<Microphone> m_Microphone;
-    std::unique_ptr<QAudioSource> m_audioSource;
+    Microphone *m_Microphone;
+    QAudioSource *m_audioSource;
     bool m_pullMode = false;
 private:
     Ui::Widget *ui;

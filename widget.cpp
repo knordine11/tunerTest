@@ -9,6 +9,7 @@
 #include <math.h>
 #include <stdlib.h>
 #include <iostream>
+#include <QMessageBox>
 
 int curLessonInt = 0;
 int orientation [21] = {1,2,3,4,5,6,7,8,1,8,1,8,1,8,7,6,5,4,3,2,1};
@@ -77,32 +78,31 @@ qreal Microphone::getNoteValue(const char *data, qint64 len) const
         ptr += channelBytes;
         rec_arr_cnt++;
     };
-    // qDebug()<<"    END OF DATA FROM MIC---------->   rec_arr_cnt "<<rec_arr_cnt;
-
+    qDebug()<<"    END OF DATA FROM MIC---------->   rec_arr_cnt "<<rec_arr_cnt;
+    qDebug() <<"frame start and end values: " << frame_start << " " << frame_end;
     if(rec_arr_cnt > frame_end){
         cout<<"\n  NEXT FRAME $$$$ "<<frame_start<<endl;
 
         ftw.DoIt(frame_start, frame_size);
         frame_start = frame_end;
         frame_end = frame_end + frame_size;}
-
-    // emit void haltstream();
+    qDebug()<< "current thread: " << QThread::currentThread();
     if (rec_arr_cnt > 200000)
     {
-        //emit on_stopMic();
-        // qDebug() <<"                      restart here";
-        // qDebug() <<"                   Microphone::pos()  "<<Microphone::pos();
+        qDebug() <<"                      restart here";
+        rec_arr_cnt = 0;
+
+        emit on_TimeOut();
+        qDebug() <<"                      post restart here";
+        return 0;
     }
     return maxValue;
 }
 
 qint64 Microphone::writeData(const char *data, qint64 len)
 {
-    if(collectMicData)
-    {
-        // qDebug() <<" %%%%%% :writeData(const char *data, qint64 len)  "<<&data<<" len "<<len;
-        m_level = getNoteValue(data, len);
-    }
+    qDebug() << "enter writeData" << rec_arr_cnt;
+    m_level = getNoteValue(data, len);
     return len;
 }
 
@@ -113,21 +113,26 @@ Widget::Widget(QWidget *parent)
 {
     ui->setupUi(this);
     this->setWindowTitle("Tuner test");
+    initializeWindow();
     initializeAudio(QMediaDevices::defaultAudioInput());
-
+    FftStuff fts;
+    connect(&ftw, &FftStuff::valueChanged,this, &Widget::updateKBnote, Qt::QueuedConnection);
+    connect(m_Microphone, &Microphone::on_TimeOut, this, &Widget::TimeOut);
 }
 
 Widget::~Widget()
 {
+    MicThread.terminate();
+    delete m_audioSource;
+    delete m_Microphone;
     delete ui;
 }
 
-void Widget::paintEvent(QPaintEvent *event)
+void Widget::paintEvent(QPaintEvent * event)
 {
     QPixmap pix(100,60);
     pix.fill(Qt::white);
     //create a QPainter and pass a pointer to the device.
-    //A paint device can be a QWidget, a QPixmap or a QImage
     QPainter *painter = new QPainter(&pix);
     QPen outsidePen(Qt::red, 4, Qt::SolidLine);
     painter->setPen(outsidePen);
@@ -145,13 +150,13 @@ void Widget::paintEvent(QPaintEvent *event)
 
 void Widget::on_btnStart_clicked()
 {
-    initializeWindow();
-    initializeAudio(QMediaDevices::defaultAudioInput());
-    FftStuff fts;
-    connect(&ftw, &FftStuff::valueChanged,this, &Widget::updateKBnote, Qt::QueuedConnection);
-    // connect(&mic,&Microphone::on_stopMic, this, &Widget::stop_mic);
+    m_Microphone->moveToThread(&MicThread);
+    MicThread.setObjectName("MicThread");
+    MicThread.start();
+
     restartAudioStream();
-    qDebug() << "end start...";
+    qDebug() << "start pushed...";
+    ui->btnStart->setVisible(false);
 }
 
 void Widget::updateKBnote(int kbValue, float acc)
@@ -171,7 +176,32 @@ void Widget::updateKBnote(int kbValue, float acc)
 
 void Widget::stop_mic()
 {
-    m_audioSource->stop();
+    m_audioSource->reset();
+    m_audioSource->start();
+}
+
+void Widget::TimeOut()
+{
+    MicThread.terminate();
+    rec_arr_cnt = 0;
+    m_Microphone->reset();
+    m_audioSource->reset();
+    frame_start = 0;
+    frame_end = 2048;
+    QMessageBox::StandardButton reply;
+    reply = QMessageBox::question(this, "Timed Out", "Continue?",
+                                  QMessageBox::Yes|QMessageBox::No);
+    if (reply == QMessageBox::Yes) {
+        qDebug() << "continuing...";
+
+        m_Microphone->moveToThread(&MicThread);
+        MicThread.setObjectName("MicThread");
+        MicThread.start();
+        m_audioSource->start(m_Microphone);
+    } else {
+        qDebug() << "No was clicked";
+        QApplication::quit();
+    }
 }
 
 void Widget::initializeWindow()
@@ -186,8 +216,9 @@ void Widget::initializeAudio(const QAudioDevice &deviceInfo)
     format.setChannelCount(1);
     format.setSampleFormat(QAudioFormat::Int16);
 
-    m_Microphone.reset(new Microphone(format));
-    m_audioSource.reset(new QAudioSource(deviceInfo, format));
+    m_Microphone = (new Microphone(format));
+    m_audioSource = (new QAudioSource(deviceInfo, format));
+    qDebug() <<  "buffer size: " << m_audioSource->bufferSize();
     m_Microphone->start();
 
 }
@@ -195,37 +226,12 @@ void Widget::initializeAudio(const QAudioDevice &deviceInfo)
 void Widget::restartAudioStream()
 {
     m_audioSource->stop();
-    qDebug()<<" restartAudioStream() |  m_pullMode  "<<m_pullMode;
-    if (m_pullMode) {
-        // pull mode: QAudioSource provides a QIODevice to pull from
-        auto *io = m_audioSource->start();
-        if (!io)
-            return;
-
-        connect(io, &QIODevice::readyRead, [this, io]() {
-            static const qint64 BufferSize = 4096;
-            const qint64 len = qMin(m_audioSource->bytesAvailable(), BufferSize);
-
-            QByteArray buffer(len, 0);
-            qint64 l = io->read(buffer.data(), len);
-
-            qDebug() << "io->read(buffer.data(), len) "<<l;
-
-            if (l > 0) {
-                const qreal level = m_Microphone->getNoteValue(buffer.constData(), l);
-                // qDebug()<<" level  " << level;
-            }
-        });
-    } else {
-        // push mode: QIODevice pushes data into QIODevice
-        m_audioSource->start(m_Microphone.get());
-        qDebug() << "============================";
-    }
+    qDebug()<< "is main: " << QThread::isMainThread();
+    m_audioSource->start(m_Microphone);
+    qDebug() << "============================";
 }
 
 void Widget::on_btnStop_clicked()
 {
-    emit on_click_stopMic();
     m_audioSource->stop();
 }
-
